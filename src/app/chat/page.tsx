@@ -19,14 +19,102 @@ export interface Message {
   sender: string;
   text?: string;
   image?: {
-    url: string;
-    publicId: string;
+    key: string;
+    url?: string;
   };
   messageType: "text" | "image";
   seen: boolean;
   seenAt?: string;
   createdAt: string;
 }
+const uploadImage = async (file: File): Promise<string> => {
+  const token = Cookies.get("token");
+
+  // Check file size: assume cutoff at 15MB for demo
+  const threshold = 15 * 1024 * 1024; // 15MB
+  if (file.size < threshold) {
+    // Single upload
+    const { data } = await axios.post(
+      `${CHAT_SERVICE}/api/v1/upload/single`,
+      {
+        fileName: file.name,
+        contentType: file.type,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    const { uploadUrl, key } = data;
+
+    // Upload to S3
+    await fetch(uploadUrl, {
+      method: 'PUT',
+      body: file,
+      headers: {
+        'Content-Type': file.type,
+      },
+    });
+
+    return key;
+  } else {
+    // Multipart upload (simplified for demo, assume not exceeding part limits)
+    const totalParts = Math.ceil(file.size / (5 * 1024 * 1024)); // 5MB parts
+
+    const { data } = await axios.post(
+      `${CHAT_SERVICE}/api/v1/upload/multipart/initiate`,
+      {
+        fileName: file.name,
+        contentType: file.type,
+        totalParts,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    const { uploadId, key, parts } = data;
+
+    const uploadedParts: Array<{ ETag: string; PartNumber: number }> = [];
+
+    for (let i = 0; i < totalParts; i++) {
+      const start = i * 5 * 1024 * 1024;
+      const end = Math.min(file.size, start + 5 * 1024 * 1024);
+      const chunk = file.slice(start, end);
+
+      const part = parts[i];
+      const response = await fetch(part.uploadUrl, {
+        method: 'PUT',
+        body: chunk,
+      });
+
+      const etag = response.headers.get('etag');
+      uploadedParts.push({ ETag: etag!, PartNumber: part.partNumber });
+    }
+
+    // Complete multipart
+    await axios.post(
+      `${CHAT_SERVICE}/api/v1/upload/multipart/complete`,
+      {
+        key,
+        uploadId,
+        parts: uploadedParts,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    return key;
+  }
+};
+
 const ChatPage = () => {
   const {
     isAuth,
@@ -189,25 +277,26 @@ const resetUnseenCount = useCallback((chatId: string) => {
     const token = Cookies.get("token");
 
     try {
-       const formData = new FormData();
-
-      formData.append("chatId", selectedUser);
-
-      if (message.trim()) {
-        formData.append("text", message);
-      }
+      let imageKey: string | undefined = undefined;
 
       if (imageFile) {
-        formData.append("image", imageFile);
+        // Upload to S3 first
+        imageKey = await uploadImage(imageFile);
       }
+
+      const messageData = {
+        chatId: selectedUser,
+        text: message.trim() || "",
+        imageKey,
+      };
 
       const { data } = await axios.post(
         `${CHAT_SERVICE}/api/v1/message`,
-        formData,
+        messageData,
         {
           headers: {
             Authorization: `Bearer ${token}`,
-            "Content-Type": "multipart/form-data",
+            "Content-Type": "application/json",
           },
         }
       );

@@ -108,7 +108,7 @@ const ChatMessages = ({
                           : "bg-gray-700 text-white"
                       }`}
                     >
-                      {e.messageType === "image" && e.image && (
+                      {e.messageType === "image" && e.image && e.image.url && (
                         <div className="relative group">
                           <Image
                             width={500}
