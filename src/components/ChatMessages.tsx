@@ -2,7 +2,7 @@ import { Message } from "@/app/chat/page";
 import { User } from "@/context/AppContext";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import moment from "moment";
-import { Check, CheckCheck } from "lucide-react";
+import { Check, CheckCheck, File as FileIcon, Video } from "lucide-react";
 import Image from "next/image";
 
 interface ChatMessagesProps {
@@ -108,17 +108,86 @@ const ChatMessages = ({
                           : "bg-gray-700 text-white"
                       }`}
                     >
-                      {e.messageType === "image" && e.image && e.image.url && (
+                      {e.messageType === "image" && e.image && (e.image.url || e.uploadStatus === "uploading") && (
                         <div className="relative group">
-                          <Image
-                            width={500}
-                            height={500}
-                            src={e.image.url}
-                            alt="shared image"
-                            className="max-w-full h-auto rounded-lg"
-                            loading="lazy"
-                          />
+                          {e.image.url ? (
+                            <Image
+                              width={500}
+                              height={500}
+                              src={e.image.url}
+                              alt="shared image"
+                              className="max-w-full h-auto rounded-lg"
+                              loading="lazy"
+                            />
+                          ) : e.uploadStatus === "uploading" ? (
+                            <>
+                              <div className="w-24 h-24 bg-gray-600 rounded-lg animate-pulse"></div>
+                              <div className="mt-1 flex items-center gap-2">
+                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                                <span className="text-xs text-gray-400">Uploading...</span>
+                              </div>
+                            </>
+                          ) : null}
                         </div>
+                      )}
+
+                      {e.messageType === "video" && e.file && (e.file.url || e.uploadStatus === "uploading") && (
+                        <div className="relative group">
+                          {e.file.url ? (
+                            <>
+                              <video
+                                controls
+                                className="max-w-full h-auto rounded-lg max-h-96"
+                                preload="metadata"
+                              >
+                                <source src={e.file.url} />
+                              </video>
+                              <p className="mt-2 text-xs opacity-75">{e.file.filename}</p>
+                            </>
+                          ) : e.uploadStatus === "uploading" ? (
+                            <>
+                              <div className="w-48 h-32 bg-gray-600 rounded-lg animate-pulse flex items-center justify-center">
+                                <Video className="w-8 h-8 text-gray-500 animate-pulse" />
+                              </div>
+                              <p className="mt-2 text-xs text-gray-500 animate-pulse">{e.file.filename}</p>
+                              <div className="mt-1 flex items-center gap-2">
+                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                                <span className="text-xs text-gray-400">Uploading...</span>
+                              </div>
+                            </>
+                          ) : null}
+                        </div>
+                      )}
+
+                      {e.messageType === "file" && e.file && (e.file.url || e.uploadStatus === "uploading") && (
+                        e.file.url ? (
+                          <div className="flex items-center gap-2 p-2 bg-gray-600 rounded">
+                            <FileIcon size={24} className="text-gray-300" />
+                            <div className="flex-1">
+                              <p className="text-sm font-medium">{e.file.filename}</p>
+                              <p className="text-xs opacity-75">{(e.file.fileSize / 1024).toFixed(1)} KB</p>
+                            </div>
+                            <a
+                              href={e.file.url}
+                              download={e.file.filename}
+                              className="text-blue-400 hover:text-blue-300 underline text-sm"
+                            >
+                              Download
+                            </a>
+                          </div>
+                        ) : e.uploadStatus === "uploading" ? (
+                          <div className="flex items-center gap-2 p-2 bg-gray-600 rounded animate-pulse">
+                            <FileIcon size={24} className="text-gray-400" />
+                            <div className="flex-1">
+                              <div className="h-4 bg-gray-500 rounded w-32 mb-1"></div>
+                              <div className="h-3 bg-gray-500 rounded w-20"></div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                              <span className="text-xs text-gray-400">Uploading...</span>
+                            </div>
+                          </div>
+                        ) : null
                       )}
 
                       {e.text && <p className="mt-1 whitespace-pre-wrap">{e.text}</p>}

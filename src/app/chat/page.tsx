@@ -22,13 +22,27 @@ export interface Message {
     key: string;
     url?: string;
   };
-  messageType: "text" | "image";
+  file?: {
+    key: string;
+    filename: string;
+    fileType: string;
+    fileSize: number;
+    url?: string;
+  };
+  messageType: "text" | "image" | "video" | "file";
+  uploadStatus?: "pending" | "uploading" | "completed" | "failed";
   seen: boolean;
   seenAt?: string;
   createdAt: string;
+  clientMessageId?: string; // For replacing temp messages
 }
-const uploadImage = async (file: File): Promise<string> => {
+const uploadMedia = async (file: File): Promise<{ mediaKey: string, mediaType: 'image' | 'video' | 'file' }> => {
   const token = Cookies.get("token");
+
+  // Determine media type
+  let mediaType: 'image' | 'video' | 'file' = 'file';
+  if (file.type.startsWith('image/')) mediaType = 'image';
+  else if (file.type.startsWith('video/')) mediaType = 'video';
 
   // Check file size: assume cutoff at 15MB for demo
   const threshold = 15 * 1024 * 1024; // 15MB
@@ -58,7 +72,7 @@ const uploadImage = async (file: File): Promise<string> => {
       },
     });
 
-    return key;
+    return { mediaKey: key, mediaType };
   } else {
     // Multipart upload (simplified for demo, assume not exceeding part limits)
     const totalParts = Math.ceil(file.size / (5 * 1024 * 1024)); // 5MB parts
@@ -111,7 +125,7 @@ const uploadImage = async (file: File): Promise<string> => {
       }
     );
 
-    return key;
+    return { mediaKey: key, mediaType };
   }
 };
 
@@ -277,22 +291,26 @@ const resetUnseenCount = useCallback((chatId: string) => {
     const token = Cookies.get("token");
 
     try {
-      let imageKey: string | undefined = undefined;
+      let mediaType: 'image' | 'video' | 'file' | undefined;
 
       if (imageFile) {
-        // Upload to S3 first
-        imageKey = await uploadImage(imageFile);
+        mediaType = imageFile.type.startsWith('image/') ? 'image' :
+                   imageFile.type.startsWith('video/') ? 'video' : 'file';
       }
 
-      const messageData = {
-        chatId: selectedUser,
-        text: message.trim() || "",
-        imageKey,
-      };
-
+      // Queue the message for non-blocking processing
       const { data } = await axios.post(
-        `${CHAT_SERVICE}/api/v1/message`,
-        messageData,
+        `${CHAT_SERVICE}/api/v1/message/queue`,
+        {
+          chatId: selectedUser,
+          text: message.trim() || "",
+          mediaType,
+          mediaInfo: mediaType ? {
+            filename: imageFile!.name,
+            fileType: imageFile!.type,
+            fileSize: imageFile!.size,
+          } : undefined,
+        },
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -301,21 +319,66 @@ const resetUnseenCount = useCallback((chatId: string) => {
         }
       );
 
+      // Create temporary message for immediate UI feedback
+      const tempMessage: Message = {
+        _id: data.clientMessageId, // Use client ID as temp ID
+        chatId: selectedUser,
+        sender: loggedInUser!._id,
+        text: message.trim() || "",
+        messageType: mediaType || "text",
+        uploadStatus: "uploading",
+        seen: false,
+        createdAt: new Date().toISOString(),
+      };
+
+      // Add media info if present
+      if (mediaType === 'image') {
+        tempMessage.image = { key: '' };
+      } else if (mediaType) {
+        tempMessage.file = {
+          key: '',
+          filename: imageFile!.name,
+          fileType: imageFile!.type,
+          fileSize: imageFile!.size,
+        };
+      }
+
       setMessages((prev) => {
         const currentMessages = prev || [];
-        const messageExists = currentMessages.some(
-          (msg) => msg._id === data.message._id
-        );
-
-        if (!messageExists) {
-          return [...currentMessages, data.message];
-        }
-        return currentMessages;
+        // Add temp message immediately (consumer will replace with real message)
+        return [...currentMessages, tempMessage];
       });
+
+      // Send file upload in background
+      if (imageFile && data.message._id) {
+        uploadMedia(imageFile).then(async (result) => {
+          // Update message with the uploaded key
+          await axios.post(
+            `${CHAT_SERVICE}/api/v1/message/update`,
+            {
+              messageId: data.message._id,
+              mediaKey: result.mediaKey,
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            }
+          );
+        }).catch((error) => {
+          console.error("Upload failed:", error);
+          // Could show error on message, but for now ignore
+        });
+      }
 
       setMessage("");
 
-      const displayText = imageFile ? "📷 image" : message;
+      const displayText = mediaType ? (
+        mediaType === 'image' ? "📷 Image" :
+        mediaType === 'video' ? "🎥 Video" :
+        mediaType === 'file' ? "📄 File" :
+        message
+      ) : message;
 
       moveChatToTop(selectedUser, {
         text: displayText,
@@ -362,21 +425,40 @@ const resetUnseenCount = useCallback((chatId: string) => {
 
       if (selectedUser === message.chatId) {
         setMessages((prev) => {
-          const currentMessages = prev || [];
-          const messageExists = currentMessages.some(
-            (msg) => msg._id === message._id
-          );
+          if (!prev) return [message];
 
-          if (!messageExists) {
-            return [...currentMessages, message];
+          // Check if this is replacing a temp message
+          const tempMessageIndex = prev.findIndex(msg => msg._id === message.clientMessageId);
+          if (tempMessageIndex !== -1) {
+            // Replace temp message with real one
+            const newMessages = [...prev];
+            newMessages[tempMessageIndex] = { ...message };
+            return newMessages;
+          } else {
+            // Check for duplicate
+            const messageExists = prev.some(msg => msg._id === message._id);
+            if (!messageExists) {
+              return [...prev, message];
+            }
           }
-          return currentMessages;
+          return prev;
         });
 
         moveChatToTop(message.chatId, message, false);
-      }else{
+      } else {
         moveChatToTop(message.chatId, message, true);
       }
+    });
+
+    socket?.on("messageUpdated", (updatedMessage) => {
+      console.log("Message updated:", updatedMessage);
+
+      setMessages((prev) => {
+        if (!prev) return prev;
+        return prev.map((msg) =>
+          msg._id === updatedMessage.messageId ? { ...msg, ...updatedMessage.message } : msg
+        );
+      });
     });
 
     socket?.on("userTyping", (data)=>{
